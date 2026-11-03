@@ -22,12 +22,21 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-        // Force HTTPS in production, when APP_URL is HTTPS, or when accessed via secure reverse proxy
+        // Force HTTPS in production, when APP_URL is HTTPS, on online domains, or when accessed via secure reverse proxy
         if (! $this->app->environment('testing')) {
+            $isLocalhost = in_array(request()?->getHost(), ['localhost', '127.0.0.1', '::1', null], true);
+
             if (
                 $this->app->environment('production') ||
                 str_starts_with((string) config('app.url'), 'https://') ||
-                (request() && (request()->isSecure() || request()->header('x-forwarded-proto') === 'https'))
+                (! $isLocalhost && ! $this->app->runningInConsole()) ||
+                (request() && (
+                    request()->isSecure() ||
+                    request()->header('x-forwarded-proto') === 'https' ||
+                    request()->header('x-forwarded-ssl') === 'on' ||
+                    request()->server('HTTPS') === 'on' ||
+                    request()->server('SERVER_PORT') == 443
+                ))
             ) {
                 URL::forceScheme('https');
             }
@@ -48,4 +57,3 @@ class AppServiceProvider extends ServiceProvider
         });
     }
 }
-
