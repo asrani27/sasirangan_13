@@ -1,0 +1,1 @@
+<!-- Legacy menu compatibility placeholder -->
