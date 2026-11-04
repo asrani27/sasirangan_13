@@ -10,6 +10,7 @@ use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 
 class RestController extends Controller
@@ -533,5 +534,292 @@ class RestController extends Controller
             'log_format' => $formattedData->pluck('keterangan')->values(),
             'data' => $formattedData->values(),
         ]);
+    }
+
+    public function perubahanHarga(Request $request): JsonResponse
+    {
+        $request->validate([
+            'pasar_id' => 'nullable|exists:pasar,id',
+            'bahan_id' => 'nullable|exists:bahan,id',
+        ]);
+
+        if ($request->filled('bahan_id')) {
+            return $this->perubahanHargaBahan($request);
+        }
+
+        return $this->perubahanHargaPasar($request);
+    }
+
+    private function perubahanHargaPasar(Request $request): JsonResponse
+    {
+        $pasarId = $request->input('pasar_id');
+        if (! $pasarId) {
+            $defaultPasar = Pasar::where('nama', 'like', '%Pekauman%')->first() ?? Pasar::first();
+            $pasarId = $defaultPasar?->id;
+        }
+
+        $pasar = $pasarId ? Pasar::with('bahan.satuan')->find($pasarId) : null;
+
+        if (! $pasar) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Pasar tidak ditemukan',
+                'data' => [],
+            ], 404);
+        }
+
+        $targetBahan = $pasar->bahan;
+        $targetBahanIds = $targetBahan->pluck('id')->all();
+
+        $query = DB::table('harga')
+            ->where('pasar_id', $pasar->id)
+            ->where('harga', '>', 0);
+
+        if (! empty($targetBahanIds)) {
+            $query->whereIn('bahan_id', $targetBahanIds);
+        }
+
+        $rows = $query->orderBy('tanggal', 'desc')
+            ->orderBy('id', 'desc')
+            ->get(['tanggal', 'harga', 'bahan_id']);
+
+        $results = $this->extractLatestPriceChanges($rows, 'bahan_id');
+
+        $bahanMap = $targetBahan->keyBy('id');
+        $missingBahanIds = array_diff(array_keys($results), $bahanMap->keys()->all());
+        if (! empty($missingBahanIds)) {
+            $extraBahan = Bahan::with('satuan')->findMany($missingBahanIds)->keyBy('id');
+            $bahanMap = $bahanMap->union($extraBahan);
+        }
+
+        $formattedData = collect($results)->map(function ($change, $bahanId) use ($bahanMap) {
+            $bahan = $bahanMap->get($bahanId);
+            $carbonDate = Carbon::parse($change['tanggal']);
+            $tglFormatted = strtolower($carbonDate->translatedFormat('j M Y'));
+            $hargaFormatted = number_format($change['harga'], 0, ',', '.');
+            $note = '';
+
+            if ($change['status'] === 'up') {
+                $note = ' (up '.number_format($change['selisih'], 0, ',', '.').')';
+            } elseif ($change['status'] === 'down') {
+                $note = ' (down '.number_format(abs($change['selisih']), 0, ',', '.').')';
+            }
+
+            $logText = "tanggal {$tglFormatted} : {$hargaFormatted}{$note}";
+
+            return [
+                'bahan_id' => (int) $bahanId,
+                'bahan_nama' => $bahan?->nama,
+                'satuan' => $bahan?->satuan?->nama,
+                'bahan' => [
+                    'id' => (int) $bahanId,
+                    'nama' => $bahan?->nama,
+                    'satuan' => $bahan?->satuan?->nama,
+                ],
+                'tanggal' => $change['tanggal'],
+                'tanggal_formatted' => $carbonDate->translatedFormat('d M Y'),
+                'harga' => (int) $change['harga'],
+                'harga_formatted' => 'Rp '.number_format($change['harga'], 0, ',', '.'),
+                'prev_harga' => (int) $change['prev_harga'],
+                'prev_harga_formatted' => 'Rp '.number_format($change['prev_harga'], 0, ',', '.'),
+                'selisih' => (int) $change['selisih'],
+                'selisih_formatted' => ($change['selisih'] > 0 ? '+Rp ' : ($change['selisih'] < 0 ? '-Rp ' : 'Rp ')).number_format(abs($change['selisih']), 0, ',', '.'),
+                'persen' => round($change['persen'], 2),
+                'persen_formatted' => ($change['persen'] > 0 ? '+' : '').number_format($change['persen'], 2).'%',
+                'status' => $change['status'],
+                'keterangan' => $logText,
+            ];
+        })->sort(function ($a, $b) {
+            if ($a['tanggal'] === $b['tanggal']) {
+                return strcmp($a['bahan_nama'] ?? '', $b['bahan_nama'] ?? '');
+            }
+
+            return strcmp($b['tanggal'], $a['tanggal']);
+        })->values();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Data Perubahan Harga Terakhir Ditemukan',
+            'pasar' => [
+                'id' => $pasar->id,
+                'nama' => $pasar->nama,
+            ],
+            'ringkasan' => [
+                'total_bahan_berubah' => $formattedData->count(),
+                'total_naik' => $formattedData->where('status', 'up')->count(),
+                'total_turun' => $formattedData->where('status', 'down')->count(),
+            ],
+            'total_data' => $formattedData->count(),
+            'log_format' => $formattedData->pluck('keterangan')->values(),
+            'data' => $formattedData,
+        ]);
+    }
+
+    private function perubahanHargaBahan(Request $request): JsonResponse
+    {
+        $bahanId = $request->input('bahan_id');
+        $bahan = Bahan::with(['satuan', 'pasar'])->find($bahanId);
+
+        if (! $bahan) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Bahan tidak ditemukan',
+                'data' => [],
+            ], 404);
+        }
+
+        $targetPasars = $bahan->pasar;
+        $pasarId = $request->input('pasar_id');
+
+        if ($pasarId) {
+            $targetPasarIds = [(int) $pasarId];
+        } else {
+            $targetPasarIds = $targetPasars->pluck('id')->all();
+        }
+
+        $query = DB::table('harga')
+            ->where('bahan_id', $bahan->id)
+            ->where('harga', '>', 0);
+
+        if (! empty($targetPasarIds)) {
+            $query->whereIn('pasar_id', $targetPasarIds);
+        }
+
+        $rows = $query->orderBy('tanggal', 'desc')
+            ->orderBy('id', 'desc')
+            ->get(['tanggal', 'harga', 'pasar_id']);
+
+        $results = $this->extractLatestPriceChanges($rows, 'pasar_id');
+
+        $pasarMap = $targetPasars->keyBy('id');
+        $missingPasarIds = array_diff(array_keys($results), $pasarMap->keys()->all());
+        if (! empty($missingPasarIds)) {
+            $extraPasars = Pasar::findMany($missingPasarIds)->keyBy('id');
+            $pasarMap = $pasarMap->union($extraPasars);
+        }
+
+        $formattedData = collect($results)->map(function ($change, $pasarId) use ($pasarMap, $bahan) {
+            $pasar = $pasarMap->get($pasarId);
+            $carbonDate = Carbon::parse($change['tanggal']);
+            $tglFormatted = strtolower($carbonDate->translatedFormat('j M Y'));
+            $hargaFormatted = number_format($change['harga'], 0, ',', '.');
+            $note = '';
+
+            if ($change['status'] === 'up') {
+                $note = ' (up '.number_format($change['selisih'], 0, ',', '.').')';
+            } elseif ($change['status'] === 'down') {
+                $note = ' (down '.number_format(abs($change['selisih']), 0, ',', '.').')';
+            }
+
+            $logText = "tanggal {$tglFormatted} : {$hargaFormatted}{$note}";
+
+            return [
+                'pasar_id' => (int) $pasarId,
+                'pasar_nama' => $pasar?->nama,
+                'pasar' => [
+                    'id' => (int) $pasarId,
+                    'nama' => $pasar?->nama,
+                ],
+                'bahan_id' => (int) $bahan->id,
+                'bahan_nama' => $bahan->nama,
+                'satuan' => $bahan->satuan?->nama,
+                'bahan' => [
+                    'id' => (int) $bahan->id,
+                    'nama' => $bahan->nama,
+                    'satuan' => $bahan->satuan?->nama,
+                ],
+                'tanggal' => $change['tanggal'],
+                'tanggal_formatted' => $carbonDate->translatedFormat('d M Y'),
+                'harga' => (int) $change['harga'],
+                'harga_formatted' => 'Rp '.number_format($change['harga'], 0, ',', '.'),
+                'prev_harga' => (int) $change['prev_harga'],
+                'prev_harga_formatted' => 'Rp '.number_format($change['prev_harga'], 0, ',', '.'),
+                'selisih' => (int) $change['selisih'],
+                'selisih_formatted' => ($change['selisih'] > 0 ? '+Rp ' : ($change['selisih'] < 0 ? '-Rp ' : 'Rp ')).number_format(abs($change['selisih']), 0, ',', '.'),
+                'persen' => round($change['persen'], 2),
+                'persen_formatted' => ($change['persen'] > 0 ? '+' : '').number_format($change['persen'], 2).'%',
+                'status' => $change['status'],
+                'keterangan' => $logText,
+            ];
+        })->sort(function ($a, $b) {
+            if ($a['tanggal'] === $b['tanggal']) {
+                return strcmp($a['pasar_nama'] ?? '', $b['pasar_nama'] ?? '');
+            }
+
+            return strcmp($b['tanggal'], $a['tanggal']);
+        })->values();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Data Perubahan Harga Terakhir Ditemukan',
+            'bahan' => [
+                'id' => $bahan->id,
+                'nama' => $bahan->nama,
+                'satuan' => $bahan->satuan?->nama,
+            ],
+            'ringkasan' => [
+                'total_pasar_berubah' => $formattedData->count(),
+                'total_naik' => $formattedData->where('status', 'up')->count(),
+                'total_turun' => $formattedData->where('status', 'down')->count(),
+            ],
+            'total_pasar' => $formattedData->count(),
+            'total_data' => $formattedData->count(),
+            'log_format' => $formattedData->pluck('keterangan')->values(),
+            'data' => $formattedData,
+        ]);
+    }
+
+    private function extractLatestPriceChanges($rows, string $groupKey): array
+    {
+        $latestPrices = [];
+        $changeDates = [];
+        $prevDifferent = [];
+        $lastSeenDates = [];
+        $completed = [];
+
+        foreach ($rows as $row) {
+            $id = (int) $row->{$groupKey};
+            if (isset($completed[$id])) {
+                continue;
+            }
+
+            if (isset($lastSeenDates[$id]) && $lastSeenDates[$id] === $row->tanggal) {
+                continue;
+            }
+            $lastSeenDates[$id] = $row->tanggal;
+
+            $p = (float) $row->harga;
+
+            if (! isset($latestPrices[$id])) {
+                $latestPrices[$id] = $p;
+                $changeDates[$id] = $row->tanggal;
+            } elseif ($p === $latestPrices[$id]) {
+                $changeDates[$id] = $row->tanggal;
+            } else {
+                $prevDifferent[$id] = $p;
+                $completed[$id] = true;
+            }
+        }
+
+        $results = [];
+        foreach ($prevDifferent as $id => $prevP) {
+            $currP = $latestPrices[$id];
+            $selisih = $currP - $prevP;
+            $results[$id] = [
+                'tanggal' => $changeDates[$id],
+                'harga' => $currP,
+                'prev_harga' => $prevP,
+                'selisih' => $selisih,
+                'persen' => $prevP > 0 ? ($selisih / $prevP) * 100 : 0.0,
+                'status' => $selisih > 0 ? 'up' : 'down',
+            ];
+        }
+
+        return $results;
+    }
+
+    public function riwayatHargaTerakhir(Request $request): JsonResponse
+    {
+        return $this->perubahanHarga($request);
     }
 }

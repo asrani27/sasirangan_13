@@ -23,6 +23,10 @@ Route::get('/info-harga', [RestController::class, 'infoHarga']);
 // Riwayat Perubahan Harga API - Public endpoint alias
 Route::get('/riwayat-harga', [RestController::class, 'riwayatHarga'])->name('api.riwayat-harga');
 
+// Perubahan Harga Terakhir API - Public endpoints
+Route::get('/perubahan-harga', [RestController::class, 'perubahanHarga'])->name('api.perubahan-harga');
+Route::get('/riwayat-harga-terakhir', [RestController::class, 'perubahanHarga'])->name('api.riwayat-harga-terakhir');
+
 // Pasar API - Public endpoint
 Route::get('/pasar', [RestController::class, 'pasar']);
 
