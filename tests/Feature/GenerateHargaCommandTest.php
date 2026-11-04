@@ -137,7 +137,7 @@ class GenerateHargaCommandTest extends TestCase
         ]);
     }
 
-    public function test_updates_existing_non_zero_price_when_force_is_active(): void
+    public function test_does_not_update_when_existing_price_is_not_zero_even_with_force(): void
     {
         $pasar = Pasar::create(['nama' => 'Pasar A']);
         $bahan = Bahan::create(['nama' => 'Beras']);
@@ -164,10 +164,11 @@ class GenerateHargaCommandTest extends TestCase
             '--force' => true,
         ])->assertSuccessful();
 
+        // Harga tetap 16000 dan tidak di-update
         $this->assertDatabaseHas('harga', [
             'id' => $existing->id,
             'tanggal' => '2026-11-04',
-            'harga' => 15000,
+            'harga' => 16000,
         ]);
     }
 }
