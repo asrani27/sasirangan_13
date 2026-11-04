@@ -104,8 +104,9 @@ class GenerateHargaCommand extends Command
                     ->where('bahan_id', $bahan->id)
                     ->first();
 
-                if ($existing && ! $isForce) {
-                    $this->line("  [SKIP] {$bahan->nama} (ID: {$bahan->id}) - Data tanggal {$tanggal} sudah ada (Harga: Rp ".number_format($existing->harga, 0, ',', '.').')');
+                // Jika data sudah ada dan harganya > 0, lewati jika bukan mode force
+                if ($existing && (int) ($existing->harga ?? 0) > 0 && ! $isForce) {
+                    $this->line("  [SKIP] {$bahan->nama} (ID: {$bahan->id}) - Data tanggal {$tanggal} sudah ada (Harga: Rp ".number_format((float) ($existing->harga ?? 0), 0, ',', '.').')');
                     $totalSkipped++;
 
                     continue;
@@ -115,13 +116,34 @@ class GenerateHargaCommand extends Command
                     ->where('bahan_id', $bahan->id)
                     ->where('tanggal', '<', $tanggal)
                     ->orderBy('tanggal', 'desc')
+                    ->orderBy('id', 'desc')
                     ->first();
 
-                $hargaBaru = $prev ? $prev->harga : 0;
+                $hargaBaru = $prev ? (int) ($prev->harga ?? 0) : 0;
                 $tglSumber = $prev ? $prev->tanggal : 'tidak ada data sebelumnya (set 0)';
 
-                if ($existing && $isForce) {
-                    $hargaLama = $existing->harga;
+                if ($existing) {
+                    // Jika harga sudah ada namun angkanya 0
+                    if ((int) ($existing->harga ?? 0) === 0) {
+                        // Namun jika harga sebelumnya juga 0, maka skip
+                        if ($hargaBaru === 0) {
+                            $this->line("  [SKIP] {$bahan->nama} (ID: {$bahan->id}) - Data tanggal {$tanggal} bernilai Rp 0 dan harga sebelumnya juga 0");
+                            $totalSkipped++;
+
+                            continue;
+                        }
+
+                        // Update harganya sama dengan harga hari sebelumnya
+                        $hargaLama = (int) ($existing->harga ?? 0);
+                        $existing->update(['harga' => $hargaBaru]);
+                        $this->info("  [UPDATE] {$bahan->nama} (ID: {$bahan->id}) - Rp ".number_format($hargaLama, 0, ',', '.').' -> Rp '.number_format($hargaBaru, 0, ',', '.')." (Sumber: {$tglSumber})");
+                        $totalUpdated++;
+
+                        continue;
+                    }
+
+                    // Mode force aktif untuk data dengan harga > 0
+                    $hargaLama = (int) ($existing->harga ?? 0);
                     $existing->update(['harga' => $hargaBaru]);
                     $this->info("  [UPDATE] {$bahan->nama} (ID: {$bahan->id}) - Rp ".number_format($hargaLama, 0, ',', '.').' -> Rp '.number_format($hargaBaru, 0, ',', '.')." (Sumber: {$tglSumber})");
                     $totalUpdated++;
