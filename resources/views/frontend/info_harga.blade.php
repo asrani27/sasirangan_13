@@ -72,7 +72,7 @@
                             <th class="px-5 py-3.5 w-12 text-center">No</th>
                             <th class="px-5 py-3.5">Komoditi</th>
                             <th class="px-5 py-3.5 text-center">Satuan</th>
-                            <th class="px-5 py-3.5 text-right">Harga Kemarin</th>
+                            <th class="px-5 py-3.5 text-right">Harga Sebelum</th>
                             <th class="px-5 py-3.5 text-right">Harga Hari Ini</th>
                             <th class="px-5 py-3.5 text-right">Perubahan (Rp)</th>
                             <th class="px-5 py-3.5 text-center">Status</th>
@@ -81,10 +81,10 @@
                     <tbody class="divide-y divide-slate-100 font-medium text-slate-700">
                         @foreach($data as $key => $item)
                             @php
-                                $kemarin = (float) $item->harga_kemarin;
+                                $sebelum = (float) ($item->harga_sebelum ?? $item->harga_kemarin ?? 0);
                                 $hariIni = (float) $item->harga_terkini;
                                 $diff = (float) $item->perubahan;
-                                $pct = ($kemarin > 0) ? ($diff / $kemarin) * 100 : 0;
+                                $pct = ($sebelum > 0) ? ($diff / $sebelum) * 100 : 0;
                             @endphp
                             <tr class="hover:bg-slate-50/80 transition">
                                 <td class="px-5 py-3.5 text-center text-xs text-slate-400 font-mono">{{ $key + 1 }}</td>
@@ -96,10 +96,23 @@
                                 </td>
                                 <td class="px-5 py-3.5 text-center text-xs text-slate-500">{{ $item->satuan->nama ?? 'Kg' }}</td>
                                 <td class="px-5 py-3.5 text-right font-mono text-slate-600">
-                                    Rp {{ number_format($kemarin, 0, ',', '.') }}
+                                    @if($sebelum > 0)
+                                        <div>Rp {{ number_format($sebelum, 0, ',', '.') }}</div>
+                                        @if(!empty($item->tanggal_sebelum))
+                                            <div class="text-[11px] text-slate-400 font-sans">
+                                                ({{ \Carbon\Carbon::parse($item->tanggal_sebelum)->translatedFormat('j M Y') }})
+                                            </div>
+                                        @endif
+                                    @else
+                                        <span class="text-slate-400">-</span>
+                                    @endif
                                 </td>
                                 <td class="px-5 py-3.5 text-right font-mono font-bold text-slate-900">
-                                    Rp {{ number_format($hariIni, 0, ',', '.') }}
+                                    @if($hariIni > 0)
+                                        Rp {{ number_format($hariIni, 0, ',', '.') }}
+                                    @else
+                                        <span class="text-slate-400 font-normal">-</span>
+                                    @endif
                                 </td>
                                 <td class="px-5 py-3.5 text-right font-mono text-xs">
                                     @if($diff > 0)
@@ -114,12 +127,12 @@
                                     @if($diff > 0)
                                         <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold bg-rose-50 text-rose-700 border border-rose-200">
                                             <i class="fas fa-arrow-trend-up text-xs"></i>
-                                            <span>+{{ number_format(abs($pct), 1) }}%</span>
+                                            <span>Naik (+{{ number_format(abs($pct), 1) }}%)</span>
                                         </span>
                                     @elseif($diff < 0)
                                         <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
                                             <i class="fas fa-arrow-trend-down text-xs"></i>
-                                            <span>-{{ number_format(abs($pct), 1) }}%</span>
+                                            <span>Turun (-{{ number_format(abs($pct), 1) }}%)</span>
                                         </span>
                                     @else
                                         <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-600">

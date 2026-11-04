@@ -15,6 +15,7 @@ use Carbon\CarbonPeriod;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\View\View;
 
 class FrontEndController extends Controller
@@ -86,7 +87,6 @@ class FrontEndController extends Controller
         $pasar_id = $request->input('pasar_id');
         $tanggal = $request->input('tanggal') ?: Carbon::today()->format('Y-m-d');
         $tanggal_sekarang = Carbon::parse($tanggal)->format('Y-m-d');
-        $tanggal_kemarin = Carbon::parse($tanggal)->subDay()->format('Y-m-d');
 
         $pasarDetail = Pasar::with(['bahan.satuan', 'bahan.kelompok'])->find($pasar_id);
 
@@ -94,18 +94,101 @@ class FrontEndController extends Controller
             toastr()->error('Pasar tidak ditemukan');
             $data = collect();
         } else {
-            $pricesToday = Harga::where('pasar_id', $pasar_id)
+            $targetBahanIds = $pasarDetail->bahan->pluck('id')->all();
+
+            $pricesToday = DB::table('harga')
+                ->where('pasar_id', $pasar_id)
                 ->where('tanggal', $tanggal_sekarang)
+                ->whereIn('bahan_id', $targetBahanIds)
+                ->orderBy('id', 'desc')
+                ->get(['bahan_id', 'harga'])
+                ->unique('bahan_id')
                 ->pluck('harga', 'bahan_id');
 
-            $pricesYesterday = Harga::where('pasar_id', $pasar_id)
-                ->where('tanggal', $tanggal_kemarin)
-                ->pluck('harga', 'bahan_id');
+            $neededCommodities = [];
+            foreach ($targetBahanIds as $bId) {
+                if (isset($pricesToday[$bId]) && (float) $pricesToday[$bId] > 0) {
+                    $neededCommodities[$bId] = (float) $pricesToday[$bId];
+                }
+            }
 
-            $data = $pasarDetail->bahan->map(function ($item) use ($pricesToday, $pricesYesterday) {
+            $prevDifferent = [];
+            $latestPrior = [];
+
+            if (! empty($neededCommodities)) {
+                $rows = DB::table('harga')
+                    ->where('pasar_id', $pasar_id)
+                    ->where('tanggal', '<', $tanggal_sekarang)
+                    ->where('harga', '>', 0)
+                    ->whereIn('bahan_id', array_keys($neededCommodities))
+                    ->orderBy('tanggal', 'desc')
+                    ->orderBy('id', 'desc')
+                    ->get(['bahan_id', 'tanggal', 'harga']);
+
+                $completed = [];
+                $lastSeenDate = [];
+
+                foreach ($rows as $row) {
+                    $bId = (int) $row->bahan_id;
+                    if (isset($completed[$bId])) {
+                        continue;
+                    }
+
+                    if (isset($lastSeenDate[$bId]) && $lastSeenDate[$bId] === $row->tanggal) {
+                        continue;
+                    }
+                    $lastSeenDate[$bId] = $row->tanggal;
+
+                    if (! isset($latestPrior[$bId])) {
+                        $latestPrior[$bId] = [
+                            'harga' => (float) $row->harga,
+                            'tanggal' => $row->tanggal,
+                        ];
+                    }
+
+                    $currPrice = $neededCommodities[$bId];
+                    $rowPrice = (float) $row->harga;
+
+                    if ($rowPrice !== $currPrice) {
+                        $prevDifferent[$bId] = [
+                            'harga' => $rowPrice,
+                            'tanggal' => $row->tanggal,
+                        ];
+                        $completed[$bId] = true;
+
+                        if (count($completed) === count($neededCommodities)) {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            $data = $pasarDetail->bahan->map(function ($item) use ($pricesToday, $prevDifferent, $latestPrior) {
                 $item->harga_terkini = (float) ($pricesToday[$item->id] ?? 0);
-                $item->harga_kemarin = (float) ($pricesYesterday[$item->id] ?? 0);
-                $item->perubahan = $item->harga_terkini - $item->harga_kemarin;
+
+                if ($item->harga_terkini > 0) {
+                    if (isset($prevDifferent[$item->id])) {
+                        $item->harga_sebelum = (float) $prevDifferent[$item->id]['harga'];
+                        $item->tanggal_sebelum = $prevDifferent[$item->id]['tanggal'];
+                    } elseif (isset($latestPrior[$item->id])) {
+                        $item->harga_sebelum = (float) $latestPrior[$item->id]['harga'];
+                        $item->tanggal_sebelum = $latestPrior[$item->id]['tanggal'];
+                    } else {
+                        $item->harga_sebelum = null;
+                        $item->tanggal_sebelum = null;
+                    }
+                } else {
+                    $item->harga_sebelum = null;
+                    $item->tanggal_sebelum = null;
+                }
+
+                $item->harga_kemarin = (float) ($item->harga_sebelum ?? 0);
+
+                if ($item->harga_sebelum !== null && $item->harga_sebelum > 0 && $item->harga_terkini > 0) {
+                    $item->perubahan = $item->harga_terkini - $item->harga_sebelum;
+                } else {
+                    $item->perubahan = 0;
+                }
 
                 return $item;
             });
